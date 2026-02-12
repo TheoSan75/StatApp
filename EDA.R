@@ -14,13 +14,13 @@ colors_flags <- c(
   "Italy" = "#008C45"    # Vert officiel italien
 )
 # 2. Load Data -----------------------------------------------------------------
-data_france <- read_csv("StatApp_Data1_France.csv", show_col_types = FALSE)
-data_allemagne <- read_csv("StatApp_Data1_Allemagne.csv", show_col_types = FALSE)
-data_italie <- read_csv("StatApp_Data1_Italie.csv", show_col_types = FALSE)
-data_swaps <- read_csv("StatApp_Data1_Swap.csv", show_col_types = FALSE)
+data_france <- read_csv("r_data/StatApp_Data1_France.csv", show_col_types = FALSE)
+data_allemagne <- read_csv("r_data/StatApp_Data1_Allemagne.csv", show_col_types = FALSE)
+data_italie <- read_csv("r_data/StatApp_Data1_Italie.csv", show_col_types = FALSE)
+data_swaps <- read_csv("r_data/StatApp_Data1_Swap.csv", show_col_types = FALSE)
 
 
-# 3. Fonction pour le calcul de métriques --------------------------------------
+# 3. Fonctions utilitaires --------------------------------------
 
 # Fonction pour calculer la "Wiggliness" (Rugosité) d'une courbe
 calc_wiggliness <- function(predict_func, min_mat = 0, max_mat = 50, step = 0.25) {
@@ -81,6 +81,26 @@ evaluate_model_performance <- function(model_name, data, predict_func, col_weigh
     bind_cols(bucket_bias) # Ajoute les colonnes de biais (Bias_0-2Y, etc.)
   
   return(scorecard)
+}
+
+filter_ecb_criteria <- function(df) {
+  # 1. Maturity Spectrum: 3 months (0.25Y) to 30 Years
+  df_filtered <- df %>%
+    filter(Maturity >= 0.25 & Maturity <= 30)
+  
+  # 2. Iterative Outlier Removal (2 Sigma Rule per bucket)
+  clean_data <- df_filtered %>%
+    mutate(Bucket = cut(Maturity, breaks = c(0, 2, 5, 10, 30), include.lowest = TRUE))
+  
+  for(i in 1:2) {
+    clean_data <- clean_data %>%
+      group_by(Bucket) %>%
+      mutate(mu = mean(Yield, na.rm=TRUE), sigma = sd(Yield, na.rm=TRUE)) %>%
+      ungroup() %>%
+      filter(abs(Yield - mu) <= 2*sigma | sigma < 0.05) %>%
+      select(-mu, -sigma)
+  }
+  return(clean_data)
 }
 
 # 4. Data Cleaning & Filtering -------------------------------------------------
@@ -318,6 +338,156 @@ print(bind_rows(final_scorecard_reglin %>% select(Model, W_RMSE),
                 final_scorecard_nssols %>% select(Model, W_RMSE)))
 
 
+# ==============================================================================
+# 6.2 INTERLUDE: GLOBAL ECB DATA PRE-PROCESSING & VISUALIZATION
+# ==============================================================================
+
+# 1. Apply Filtering Globally
+# We create a temporary cleaned list to compare
+data_list_clean <- lapply(data_list, filter_ecb_criteria)
+
+# 2. Visualize Removed Data (Before vs After)
+plot_cleaning_impact <- function(country) {
+  raw <- data_list[[country]] %>% mutate(Status = "Removed")
+  clean <- data_list_clean[[country]] %>% mutate(Status = "Kept")
+  
+  # We identify points that are in 'raw' but NOT in 'clean'
+  combined <- bind_rows(clean, anti_join(raw, clean, by = c("Maturity", "Yield")))
+  
+  ggplot(combined, aes(x = Maturity, y = Yield, color = Status, shape = Status)) +
+    geom_point(alpha = 0.7, size = 2) +
+    scale_color_manual(values = c("Kept" = "#0055A4", "Removed" = "red")) +
+    scale_shape_manual(values = c("Kept" = 19, "Removed" = 4)) +
+    labs(title = paste("ECB Cleaning Impact -", country),
+         subtitle = "Red crosses = Outliers or maturities outside 3M-30Y range") +
+    theme_minimal()
+}
+
+# Generate plots
+p_clean_fr <- plot_cleaning_impact("France")
+p_clean_de <- plot_cleaning_impact("Germany")
+p_clean_it <- plot_cleaning_impact("Italy")
+
+grid.arrange(p_clean_fr, p_clean_de, p_clean_it, nrow = 2)
+
+# 3. OVERWRITE GLOBAL DATA
+# From this point on, 'data_list' contains ONLY the cleaned data.
+# Models 7, 8, and 9 will automatically use this cleaned data.
+data_list <- data_list_clean 
+message("⚠️ DATA UPDATE: 'data_list' has been overwritten with ECB-filtered data.")
+
+# 6,5 . Modèle NSS OLS ECB guidelines compatible -------------------------------
+
+
+# --- Objective Function (Weighted SSE) ---
+nss_objective <- function(params, maturities, yields, weights) {
+  # Constraints check (Soft boundaries via penalty)
+  # b0 > 0, tau1 > 0, tau2 > 0
+  if(params[1] < 0 || params[5] <= 0 || params[6] <= 0) {
+    return(1e9) # Penalty for violating constraints
+  }
+  
+  fitted <- nss_func(maturities, params)
+  residuals <- yields - fitted
+  
+  # Weighted Sum of Squared Errors
+  # Using Amt_Out as weight (Proxy for Liquidity preference mentioned in ECB paper)
+  sse <- sum(weights * residuals^2, na.rm=TRUE)
+  return(sse)
+}
+
+# --- D. Analysis Loop ---
+
+plots_nss <- list()
+scorecards_nss <- list()
+params_nss <- list()
+
+# Starting values (Heuristic: b0=long term, b1=spread, others=small)
+# These are crucial for NSS as the function is non-convex
+start_params <- c(b0=2, b1=-1, b2=0, b3=0, tau1=1, tau2=5) 
+
+data_list <- split(df_all, df_all$Country)
+
+for (country in names(data_list)) {
+  
+  # 1. Apply ECB Filters
+  df_ecb <- data_list[[country]]
+  
+  # 2. Optimization
+  # Using L-BFGS-B to enforce bounds: Tau > 0, B0 > 0
+  opt_res <- optim(
+    par = start_params,
+    fn = nss_objective,
+    maturities = df_ecb$Maturity,
+    yields = df_ecb$Yield,
+    weights = df_ecb$Amt_Out,
+    method = "L-BFGS-B",
+    lower = c(0, -15, -15, -15, 0.1, 0.1), # b0>0, tau>0.1
+    upper = c(15, 15, 15, 15, 10, 30),
+    control = list(maxit = 2000)
+  )
+  
+  best_params <- opt_res$par
+  params_nss[[country]] <- best_params
+  
+  # 3. Create Prediction Function closure
+  predict_nss <- function(m) {
+    nss_func(m, best_params)
+  }
+  
+  # 4. Evaluation using your scorecard function
+  # Note: We evaluate on the Filtered "High Quality" dataset, 
+  # as ECB implies fitting errors should be measured on the selected sample.
+  score <- evaluate_model_performance(
+    model_name = paste("NSS_ECB_", country),
+    data = df_ecb,
+    predict_func = predict_nss,
+    col_weight = "Amt_Out"
+  )
+  scorecards_nss[[country]] <- score
+  
+  # 5. Visualisation
+  # On trace jusqu'à 30 ans (limite ECB)
+  grid_x <- seq(0, 30, length.out = 300)
+  grid_y <- predict_nss(grid_x)
+  line_data <- data.frame(Maturity = grid_x, Yield = grid_y)
+  
+  # Graphique Principal : Courbe + Points (taille = volume)
+  p <- ggplot(df_ecb, aes(x = Maturity, y = Yield)) +
+    # Points observés (Nettoyés)
+    geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.6) +
+    # Courbe Modélisée
+    geom_line(data = line_data, aes(x = Maturity, y = Yield), color = "black", size = 1) +
+    
+    scale_x_continuous(limits = c(0, 32), breaks = seq(0, 30, by = 5)) +
+    labs(
+      title = paste(country, "- NSS ECB (Cleaned Data)"),
+      subtitle = paste("RMSE Pondéré:", score$W_RMSE, "| Stabilité (Wiggliness):", score$Wiggliness),
+      y = "Yield (%)",
+      size = "Volume (Mds)"
+    ) +
+    theme_minimal() +
+    theme(plot.title = element_text(face = "bold", color = colors_flags[country]))
+  
+  # Graphique Secondaire : Résidus
+  df_ecb$Residus <- df_ecb$Yield - predict_nss(df_ecb$Maturity)
+  
+  p_res <- ggplot(df_ecb, aes(x = Maturity, y = Residus)) +
+    geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.6) +
+    geom_hline(yintercept = 0, color = "black") +
+    scale_x_continuous(limits = c(0, 32), breaks = seq(0, 30, by = 5)) +
+    labs(title = "Distribution des Résidus", y = "Ecart (bps)", size = "Volume") +
+    theme_minimal()
+  
+  # Stockage dans la liste correspondante (plots_nss)
+  plots_nss[[country]] <- grid.arrange(p, p_res, nrow = 2, heights = c(2, 1))
+  
+}
+
+# --- Results ---
+final_scorecard_nss <- bind_rows(scorecards_nss)
+print(final_scorecard_nss)
+
 # 7. Modèle NSS WLS ------------------------------------------------------------
 # Hypothèse : On donne plus de poids aux obligations liquides (Gros Amt_Out).
 # Cela permet d'ignorer les "Trash Bonds" qui faussent la courbe.
@@ -452,7 +622,7 @@ for (country in names(data_list)) {
     geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.5) +
     geom_line(data = line_data, color = "purple", size = 1) +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
-    labs(title = paste(country, "- NSS sur Duration (Acte 4)"),
+    labs(title = paste(country, "- NSS sur Duration"),
          subtitle = "L'axe Duration comprime l'échelle temporelle (Nelder-Mead)",
          x = "Duration", y = "Yield") +
     theme_minimal() + theme(plot.title = element_text(face="bold", color=colors_flags[country]))
@@ -471,10 +641,137 @@ for (country in names(data_list)) {
 final_scorecard_nsswlsduration <- bind_rows(scorecards_nsswlsduration)
 print(final_scorecard_nsswlsduration)
 
+# 9. Modèle Splines cubiques ---------------------------------------------------
 
-###########################
-#TEST WIP
-##########################
+# Fonction d'optimisation du paramètre de lissage (spar) via validation croisée
+fit_cubic_spline_optimized <- function(df) {
+  # On teste une grille de paramètres de lissage
+  # spar ~ 0 : Interpolation quasi-parfaite (très wiggly)
+  # spar ~ 1 : Régression linéaire (très rigide)
+  spar_grid <- seq(0.1, 1.5, by = 0.05) 
+  
+  best_score <- Inf
+  best_model <- NULL
+
+  weights <- df$Amt_Out
+  weights[is.na(weights)] <- 0
+
+  for(s in spar_grid) {
+    # smooth.spline effectue une régression spline cubique pénalisée
+    # cv = TRUE force la validation croisée généralisée (GCV) si dispo
+    fit <- tryCatch({
+      smooth.spline(x = df$Maturity, y = df$Yield, w = weights, spar = s, cv = TRUE)
+    }, error = function(e) NULL)
+    
+    if(!is.null(fit)) {
+      # On cherche à minimiser le critère de validation croisée (cv.crit)
+      score <- fit$cv.crit
+      if(score < best_score) {
+        best_score <- score
+        best_model <- fit
+      }
+    }
+  }
+  return(best_model)
+}
+
+plots_spline <- list()
+scorecards_spline <- list()
+
+print("--- Running Cubic Spline Analysis ---")
+
+for (country in names(data_list)) {
+  df <- data_list[[country]]
+  
+  # 1. Fitting
+  best_spline <- fit_cubic_spline_optimized(df)
+  
+  # 2. Wrapper de prédiction
+  # smooth.spline retourne une liste, on extrait $y
+  predict_spline <- function(m) {
+    predict(best_spline, x = m)$y
+  }
+  
+  # 3. Évaluation
+  score <- evaluate_model_performance(
+    model_name = paste("Cubic_Spline_", country), 
+    data = df, 
+    predict_func = predict_spline, 
+    col_weight = "Amt_Out"
+  )
+  scorecards_spline[[country]] <- score
+  
+  # 4. Visualisation
+  grid_x <- seq(0, 50, length.out = 500)
+  line_data <- data.frame(Maturity = grid_x, Yield = predict_spline(grid_x))
+  
+  # Graphe Principal : Fit
+  p <- ggplot(df, aes(x = Maturity, y = Yield)) + 
+    geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.5) +
+    geom_line(data = line_data, color = "darkgreen", size = 1) +
+    scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
+    labs(
+      title = paste(country, "- Cubic Smoothing Spline"),
+      subtitle = paste("Optimized Spar =", round(best_spline$spar, 3), "| CV Score =", round(best_spline$cv.crit, 4)),
+      x = "Maturité (Années)", 
+      y = "Yield (%)",
+      size = "Volume"
+    ) +
+    theme_minimal() + 
+    theme(plot.title = element_text(face = "bold", color = colors_flags[country]))
+  
+  # Graphe Secondaire : Résidus
+  df$Residus <- df$Yield - predict_spline(df$Maturity)
+  
+  p_res <- ggplot(df, aes(x = Maturity, y = Residus)) +
+    geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.5) +
+    geom_hline(yintercept = 0, color = "black") +
+    geom_smooth(method = "loess", se = FALSE, color = "gray", linetype = "dotted") +
+    scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
+    labs(title = "Structure des Résidus (Spline)", y = "Bps", x = "Maturité") +
+    theme_minimal()
+  
+  # Stockage du plot combiné
+  plots_spline[[country]] <- grid.arrange(p, p_res, nrow = 2, heights = c(2, 1))
+}
+
+# Affichage des Résultats
+final_scorecard_spline <- bind_rows(scorecards_spline)
+print(final_scorecard_spline)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ==============================================================================
 # INTERLUDE : VÉRIFICATION DE L'HYPOTHÈSE (OLS PUR) - CORRIGÉ
 # ==============================================================================
@@ -522,7 +819,7 @@ print("--- Comparaison OLS : Maturité vs Duration ---")
 for (country in names(data_list)) {
   df <- data_list[[country]]
   
-  # --- CORRECTION ICI : On recalcule la Duration pour être sûr qu'elle existe ---
+  # On recalcule la Duration pour être sûr qu'elle existe
   # On utilise ta fonction calculate_duration (qui est maintenant la Modified Duration)
   df$Duration <- calculate_duration(df$Yield, df$Cpn, df$Maturity)
   
