@@ -80,7 +80,6 @@ for (country in names(data_list)) {
     # 3. Méta-informations
     labs(
       title = paste(country, "- Modèle Linéaire"),
-      subtitle = paste("RMSE Pondéré:", score$W_RMSE, "| Biais 10-30Y:", score$`Bias_10-30Y`),
       x = "Maturité (Années)", 
       y = "Rendement (Yield %)"
     ) +
@@ -95,7 +94,7 @@ for (country in names(data_list)) {
     geom_hline(yintercept = 0, color = "black") +
     geom_smooth(method = "loess", se = FALSE, color = "gray", linetype = "dotted") +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
-    labs(title = "Structure des Résidus", y = "Résidu (bps)", x = "Maturité") +
+    labs(title = "Structure des Résidus", y = "Résidu (bps)", x = "Maturité (Années)") +
     theme_minimal()
   
   # On combine les deux graphes (Haut : Fit, Bas : Résidus)
@@ -176,8 +175,7 @@ for (country in names(data_list)) {
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
     labs(
       title = paste(country, "- NSS Classique (OLS)"),
-      subtitle = paste("Le modèle traite le point petit (Trash) comme le gros (Benchmark)."),
-      x = "Maturité", y = "Yield (%)", size = "Volume"
+      x = "Maturité (Années)", y = "Yield (%)", size = "Volume"
     ) +
     theme_minimal() +
     theme(plot.title = element_text(face = "bold", color = colors_flags[country]))
@@ -191,7 +189,7 @@ for (country in names(data_list)) {
     # On ajoute une ligne de tendance locale pour voir si le biais persiste
     geom_smooth(method = "loess", se = FALSE, color = "gray", linetype = "dotted") +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
-    labs(title = "Résidus : Hétéroscédasticité visible", y = "Bps", x = "Maturité", size = "Volume") +
+    labs(title = "Résidus : Hétéroscédasticité visible", y = "Bps", x = "Maturité (Années)", size = "Volume") +
     theme_minimal()
   
   plots_nssols[[country]] <- grid.arrange(p, p_res, nrow = 2, heights = c(2, 1))
@@ -223,8 +221,8 @@ data_list_clean <- lapply(data_list, filter_ecb_criteria)
 plot_cleaning_impact <- function(country) {
   
   # A. Prepare Data
-  raw <- data_list[[country]] %>% mutate(Status = "Removed")
-  clean <- data_list_clean[[country]] %>% mutate(Status = "Kept")
+  raw <- data_list[[country]] %>% mutate(Status = "Retiré")
+  clean <- data_list_clean[[country]] %>% mutate(Status = "Conservé")
   
   removed_points <- anti_join(raw, clean, by = c("Maturity", "Yield"))
   combined_points <- bind_rows(clean, removed_points)
@@ -294,14 +292,14 @@ plot_cleaning_impact <- function(country) {
                size = 2, alpha = 0.7) +
     
     # --- 6. Styling ---
-    scale_color_manual(values = c("Kept" = "#0055A4", "Removed" = "red")) +
-    scale_shape_manual(values = c("Kept" = 19, "Removed" = 4)) + 
+    scale_color_manual(values = c("Conservé" = "#0055A4", "Retiré" = "red")) +
+    scale_shape_manual(values = c("Conservé" = 19, "Retiré" = 4)) + 
     scale_x_continuous(breaks = seq(0, 30, 5), limits = c(0, 32)) +
     
     labs(
-      title = paste("Outlier Detection (Dynamic Buckets) -", country),
-      subtitle = paste0("Green Area = +/- 2 Sigma (", n_buckets, " buckets) | Red Cross = Outlier"),
-      x = "Residual Maturity", y = "Yield"
+      title = paste("Détection des Outliers -", country),
+      subtitle = paste0("Zone Verte = +/- 2σ (", n_buckets, " groupes) | Croix Rouges = Outlier"),
+      x = "Maturité (Années)", y = "Yield (%)"
     ) +
     theme_minimal() +
     theme(
@@ -328,24 +326,6 @@ message("⚠️ DATA UPDATE: 'data_list' has been overwritten with ECB-filtered 
 
 
 # 6,5 . Modèle NSS OLS ECB guidelines compatible -------------------------------
-
-
-# --- Objective Function (Weighted SSE) ---
-nss_objective <- function(params, maturities, yields, weights) {
-  # Constraints check (Soft boundaries via penalty)
-  # b0 > 0, tau1 > 0, tau2 > 0
-  if(params[1] < 0 || params[5] <= 0 || params[6] <= 0) {
-    return(1e9) # Penalty for violating constraints
-  }
-  
-  fitted <- nss_func(maturities, params)
-  residuals <- yields - fitted
-  
-  # Weighted Sum of Squared Errors
-  # Using Amt_Out as weight (Proxy for Liquidity preference mentioned in ECB paper)
-  sse <- sum(weights * residuals^2, na.rm=TRUE)
-  return(sse)
-}
 
 # --- D. Analysis Loop ---
 
@@ -413,8 +393,8 @@ for (country in names(data_list)) {
     
     scale_x_continuous(limits = c(0, 32), breaks = seq(0, 30, by = 5)) +
     labs(
-      title = paste(country, "- NSS ECB (Cleaned Data)"),
-      subtitle = paste("RMSE Pondéré:", score$W_RMSE, "| Stabilité (Wiggliness):", score$Wiggliness),
+      title = paste(country, "- NSS et Méthodologie BCE"),
+      x = "Maturité (Années)",
       y = "Yield (%)",
       size = "Volume (Mds)"
     ) +
@@ -428,7 +408,7 @@ for (country in names(data_list)) {
     geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.6) +
     geom_hline(yintercept = 0, color = "black") +
     scale_x_continuous(limits = c(0, 32), breaks = seq(0, 30, by = 5)) +
-    labs(title = "Distribution des Résidus", y = "Ecart (bps)", size = "Volume") +
+    labs(title = "Distribution des Résidus", y = "Ecart (bps)", size = "Volume (Mds)", x = "Maturité (Années)") +
     theme_minimal()
   
   # Stockage dans la liste correspondante (plots_nss)
@@ -517,8 +497,7 @@ for (country in names(data_list)) {
     geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.5) +
     geom_line(data = line_data, color = "black", size = 1) +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
-    labs(title = paste(country, "- NSS Pondéré par le Volume (WLS)"), 
-         subtitle = "Fit Pondéré (Algorithme Nelder-Mead)", y="Yield") +
+    labs(title = paste(country, "- NSS Pondéré par le Volume (WLS)"), x = "Maturité (Années)", y = "Yield (%)", size = "Volume") +
     theme_minimal() + theme(plot.title = element_text(face="bold", color=colors_flags[country]))
   
   df$Residus <- df$Yield - predict_nss_wls(df$Maturity)
@@ -526,7 +505,7 @@ for (country in names(data_list)) {
     geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.5) +
     geom_hline(yintercept = 0) +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
-    labs(title = "Résidus", y="Bps", size="Volume") + theme_minimal()
+    labs(title = "Résidus", y="Bps", size="Volume", x = "Maturité (Années)") + theme_minimal()
   
   plots_nsswls[[country]] <- grid.arrange(p, p_res, nrow=2, heights=c(2,1))
   results_nsswls[[country]] <- list(
@@ -574,8 +553,7 @@ for (country in names(data_list)) {
     geom_line(data = line_data, color = "purple", size = 1) +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
     labs(title = paste(country, "- NSS sur Duration"),
-         subtitle = "L'axe Duration comprime l'échelle temporelle (Nelder-Mead)",
-         x = "Duration", y = "Yield") +
+         x = "Duration (Années)", y = "Yield (%)") +
     theme_minimal() + theme(plot.title = element_text(face="bold", color=colors_flags[country]))
   
   df$Residus <- df$Yield - predict_nss_dur(df$Duration)
@@ -583,7 +561,7 @@ for (country in names(data_list)) {
     geom_point(aes(size = Amt_Out), color = colors_flags[country], alpha = 0.5) +
     geom_hline(yintercept = 0) +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
-    labs(title = "Résidus vs Duration", y="Bps", x="Duration", size="Volume") + theme_minimal()
+    labs(title = "Résidus vs Duration", y="Bps", x="Duration (Années)", size="Volume") + theme_minimal()
   
   plots_nsswlsduration[[country]] <- grid.arrange(p, p_res, nrow=2, heights=c(2,1))
   results_nss_duration[[country]] <- list(
@@ -667,7 +645,7 @@ for (country in names(data_list)) {
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
     labs(
       title = paste(country, "- Cubic Smoothing Spline"),
-      subtitle = paste("Optimized Spar =", round(best_spline$spar, 3), "| CV Score =", round(best_spline$cv.crit, 4)),
+      subtitle = paste("Optimized Spar =", round(best_spline$spar, 3)),
       x = "Maturité (Années)", 
       y = "Yield (%)",
       size = "Volume"
@@ -683,7 +661,7 @@ for (country in names(data_list)) {
     geom_hline(yintercept = 0, color = "black") +
     geom_smooth(method = "loess", se = FALSE, color = "gray", linetype = "dotted") +
     scale_x_continuous(limits = c(0, 50), breaks = seq(0, 50, by = 5)) +
-    labs(title = "Structure des Résidus (Spline)", y = "Bps", x = "Maturité") +
+    labs(title = "Structure des Résidus (Spline)", y = "Bps", x = "Maturité (Années)") +
     theme_minimal()
   
   # Stockage du plot combiné

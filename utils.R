@@ -1,4 +1,12 @@
 ################################################################################
+######    Fonction Convertir format date
+################################################################################
+
+date_labeller <- function(x) {
+  format(as.Date(x, origin = "1970-01-01"), "%Y")
+}
+
+################################################################################
 ######    Fonction Calcul de Wiggliness
 ################################################################################
 # Fonction pour calculer la "Wiggliness" (Rugosité) d'une courbe
@@ -182,4 +190,23 @@ evaluate_model_performance <- function(model_name, data, predict_func, col_weigh
     bind_cols(bucket_bias)
   
   return(scorecard)
+}
+
+################################################################################
+######    Fonction Calcul de l'objectif NSS
+################################################################################
+nss_objective <- function(params, maturities, yields, weights) {
+  # Constraints check (Soft boundaries via penalty)
+  # b0 > 0, tau1 > 0, tau2 > 0
+  if(params[1] < 0 || params[5] <= 0 || params[6] <= 0) {
+    return(1e9) # Penalty for violating constraints
+  }
+  
+  fitted <- nss_func(maturities, params)
+  residuals <- yields - fitted
+  
+  # Weighted Sum of Squared Errors
+  # Using Amt_Out as weight (Proxy for Liquidity preference mentioned in ECB paper)
+  sse <- sum(weights * residuals^2, na.rm=TRUE)
+  return(sse)
 }
