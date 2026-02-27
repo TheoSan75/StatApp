@@ -338,8 +338,6 @@ results_nss_ecb <- list()
 # These are crucial for NSS as the function is non-convex
 start_params <- c(b0=2, b1=-1, b2=0, b3=0, tau1=1, tau2=5) 
 
-data_list <- split(df_all, df_all$Country)
-
 for (country in names(data_list)) {
   
   # 1. Apply ECB Filters
