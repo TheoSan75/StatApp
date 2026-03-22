@@ -1,0 +1,187 @@
+﻿ECB filtering : 392941 → 357264 obs (9.1% supprimés)
+
+── Lambda optimal par pays ──
+> print(lambda_by_country)
+# A tibble: 5 × 2
+  Country Lambda
+  <chr>    <dbl>
+1 BE       0.294
+2 DE       0.286
+3 ES       0.299
+4 FR       0.134
+5 IT       0.358
+
+Lambda moyen (référence) : 0.2741
+Pic de courbure à : 6.54 ans
+
+── Butterfly adaptatif par pays ──
+> print(butterfly_weights |>
++         select(Country, Lambda, mat_s, mat_m, mat_l, coef_b1, coef_b2, coef_b3))
+# A tibble: 5 × 8
+  Country Lambda mat_s mat_m mat_l coef_b1   coef_b2 coef_b3
+  <chr>    <dbl> <dbl> <dbl> <dbl>   <dbl>     <dbl>   <dbl>
+1 BE       0.294  0.25  6.10  12.2       0  0          0.227
+2 DE       0.286  0.25  6.28  12.6       0 -2.78e-16   0.227
+3 ES       0.299  0.25  6.01  12.0       0  5.55e-17   0.226
+4 FR       0.134  0.25 13.4   26.7       0  2.78e-16   0.234
+5 IT       0.358  0.25  5.01  10.0       0  5.55e-17   0.224
+
+> print(correlations)
+# A tibble: 5 × 4
+  Country Corr_Level Corr_Slope Corr_Curvature
+  <chr>        <dbl>      <dbl>          <dbl>
+1 BE           0.996     -0.993          0.678
+2 DE           0.995     -0.993          0.869
+3 ES           0.997     -0.985          0.749
+4 FR           0.828     -0.862          0.742
+5 IT           0.996     -0.946          0.311
+
+--- Performance Globale (RMSE en %) ---
+> print(rmse_final)
+# A tibble: 6 × 3
+  Country          Mean_Error   RMSE
+  <chr>                 <dbl>  <dbl>
+1 BE                        0 0.0466
+2 DE                        0 0.0484
+3 ES                        0 0.0522
+4 FR                        0 0.365 
+5 IT                        0 0.0956
+6 MOYENNE (5 pays)          0 0.122
+
+
+
+> print(stationarity_results)
+# A tibble: 15 × 7
+   Country Factor          ADF_p_value KPSS_p_value Verdict_ADF      Verdict_KPSS     Synthese             
+   <chr>   <chr>                 <dbl>        <dbl> <chr>            <chr>            <chr>                
+ 1 BE      Beta1_Level          0.315          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+ 2 BE      Beta2_Slope          0.790          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+ 3 BE      Beta3_Curvature      0.0937         0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+ 4 DE      Beta1_Level          0.0452         0.01 Stationnaire     Non-Stationnaire Ambigu               
+ 5 DE      Beta2_Slope          0.810          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+ 6 DE      Beta3_Curvature      0.441          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+ 7 ES      Beta1_Level          0.586          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+ 8 ES      Beta2_Slope          0.661          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+ 9 ES      Beta3_Curvature      0.0960         0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+10 FR      Beta1_Level          0.101          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+11 FR      Beta2_Slope          0.399          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+12 FR      Beta3_Curvature      0.01           0.01 Stationnaire     Non-Stationnaire Ambigu               
+13 IT      Beta1_Level          0.560          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+14 IT      Beta2_Slope          0.511          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+15 IT      Beta3_Curvature      0.224          0.01 Non-Stationnaire Non-Stationnaire SÛR: Non-Stationnaire
+
+
+--- Coefficients AR(1) par pays ---
+> print(models_results |> select(Country, Factor, Phi, Intercept))
+# A tibble: 15 × 4
+   Country Factor            Phi Intercept
+   <chr>   <chr>           <dbl>     <dbl>
+ 1 BE      Beta1_Level     1.000     2.94 
+ 2 BE      Beta2_Slope     0.997    -1.58 
+ 3 BE      Beta3_Curvature 0.985    -2.30 
+ 4 DE      Beta1_Level     0.999     1.92 
+ 5 DE      Beta2_Slope     0.995    -0.734
+ 6 DE      Beta3_Curvature 0.989    -1.28 
+ 7 ES      Beta1_Level     0.999     3.37 
+ 8 ES      Beta2_Slope     0.997    -1.79 
+ 9 ES      Beta3_Curvature 0.989    -2.56 
+10 FR      Beta1_Level     0.996     3.47 
+11 FR      Beta2_Slope     0.995    -2.05 
+12 FR      Beta3_Curvature 0.994    -3.53 
+13 IT      Beta1_Level     0.998     3.91 
+14 IT      Beta2_Slope     0.995    -1.92 
+15 IT      Beta3_Curvature 0.990    -2.78 
+
+
+── Vérification des horizons (données journalières vs article mensuel) ──
+> print(usable_obs)
+  Horizon         Label Usable_obs Sufficient
+1      21   h=21j (~1M)        303       TRUE
+2     126  h=126j (~6M)        198       TRUE
+3     252 h=252j (~12M)         72       TRUE
+
+── Paramètres régression directe h-pas (sur le TRAIN) ──
+> print(direct_params |> arrange(Country, Factor, Horizon))
+# A tibble: 45 × 5
+   Country Factor          Horizon     c_h gamma_h
+   <chr>   <chr>             <dbl>   <dbl>   <dbl>
+ 1 BE      Beta1_Level          21  0.0944  0.980 
+ 2 BE      Beta1_Level         126  0.568   0.890 
+ 3 BE      Beta1_Level         252  1.28    0.737 
+ 4 BE      Beta2_Slope          21 -0.154   0.885 
+ 5 BE      Beta2_Slope         126 -0.754   0.430 
+ 6 BE      Beta2_Slope         252 -1.19    0.0979
+ 7 BE      Beta3_Curvature      21 -0.485   0.783 
+ 8 BE      Beta3_Curvature     126 -1.57    0.305 
+ 9 BE      Beta3_Curvature     252 -2.49   -0.102 
+10 DE      Beta1_Level          21  0.0723  0.976 
+# ℹ 35 more rows
+# ℹ Use `print(n = ...)` to see more rows
+
+
+
+
+PERFORMANCES OUT-OF-SAMPLE (SPLIT 80/20)
+> message("Ratio < 1 = Diebold-Li bat le Random Walk")
+Ratio < 1 = Diebold-Li bat le Random Walk
+> message("========================================================")
+========================================================
+> print(forecast_perf, n = Inf)
+# A tibble: 15 × 8
+   Country Horizon RMSE_DieboldLi RMSE_RandomWalk Bias_DL Bias_RW Ratio_DL_vs_RW DL_Wins
+   <chr>     <dbl>          <dbl>           <dbl>   <dbl>   <dbl>          <dbl> <lgl>  
+ 1 BE           21          0.180           0.152 -0.0777  0.016           1.19  FALSE  
+ 2 BE          126          0.470           0.272 -0.347   0.0039          1.73  FALSE  
+ 3 BE          252          0.509           0.507 -0.326  -0.146           1.00  FALSE  
+ 4 DE           21          0.173           0.160 -0.0477  0.0239          1.08  FALSE  
+ 5 DE          126          0.394           0.286 -0.276   0.0377          1.38  FALSE  
+ 6 DE          252          0.637           0.498 -0.485  -0.106           1.28  FALSE  
+ 7 ES           21          0.167           0.145 -0.0598  0.01            1.16  FALSE  
+ 8 ES          126          0.399           0.280 -0.290  -0.0559          1.42  FALSE  
+ 9 ES          252          0.492           0.527 -0.361  -0.278           0.934 TRUE   
+10 FR           21          0.482           0.394  0.270   0.0072          1.22  FALSE  
+11 FR          126          1.59            0.601  1.43    0.0235          2.65  FALSE  
+12 FR          252          0.892           0.727  0.662  -0.0979          1.23  FALSE  
+13 IT           21          0.232           0.168 -0.128   0.0025          1.38  FALSE  
+14 IT          126          0.681           0.33  -0.573  -0.135           2.06  FALSE  
+15 IT          252          0.697           0.634 -0.589  -0.439           1.1   FALSE 
+
+
+
+── Résumé agrégé (moyenne sur les 5 pays) ──
+> print(forecast_perf_avg)
+# A tibble: 3 × 6
+  Horizon Avg_RMSE_DL Avg_RMSE_RW Avg_Ratio N_DL_Wins N_Countries
+    <dbl>       <dbl>       <dbl>     <dbl>     <int>       <int>
+1      21       0.247       0.204      1.20         0           5
+2     126       0.707       0.354      1.85         0           5
+3     252       0.646       0.578      1.11         1           5
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

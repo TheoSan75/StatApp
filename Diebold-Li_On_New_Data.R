@@ -262,8 +262,28 @@ df_plot_factors <- df_comparison |>
     ),
     Source = ifelse(grepl("Beta", Metric), "Estimé (Modèle)", "Empirique (Proxy)")
   ) |>
-  mutate(Value = ifelse(Metric == "Beta2_Slope",     -Value,          Value)) |>
-  mutate(Value = ifelse(Metric == "Beta3_Curvature",  Value * coef_b3, Value))
+  # Inversion Beta2 + mise à l'échelle Beta3 (comme avant)
+  mutate(Value = ifelse(Metric == "Beta2_Slope",      -Value,           Value)) |>
+  mutate(Value = ifelse(Metric == "Beta3_Curvature",   Value * coef_b3, Value)) |>
+  # ── RECENTRAGE DES PROXIES EMPIRIQUES ──────────────────────────────────────
+  # Pour chaque groupe (Country x Factor_Type), on calcule les moyennes
+  # séparées des séries "Estimé" et "Empirique", puis on translate l'Empirique
+  # pour qu'il partage la même moyenne que l'Estimé.
+  # IMPORTANT : Ce recentrage est purement graphique. Les corrélations
+  # reportées dans df_comparison restent basées sur les valeurs brutes.
+  group_by(Country, Factor_Type) |>
+  mutate(
+    mean_model    = mean(Value[Source == "Estimé (Modèle)"],   na.rm = TRUE),
+    mean_empirical = mean(Value[Source == "Empirique (Proxy)"], na.rm = TRUE),
+    Value = ifelse(
+      Source == "Empirique (Proxy)",
+      Value - mean_empirical + mean_model,   # Translation vers la moyenne du modèle
+      Value
+    )
+  ) |>
+  ungroup() |>
+  select(-mean_model, -mean_empirical)
+
 
 germany_name <- top5_countries[grepl("DE|Germany|Allemagne", top5_countries, ignore.case = TRUE)][1]
 
@@ -463,3 +483,340 @@ p_acf_res <- ggplot(df_residuals_acf_de, aes(x = Lag, y = ACF)) +
        x = "Retard (Jours)", y = "Autocorrélation Résiduelle") +
   theme_minimal()
 print(p_acf_res)
+
+
+# ==============================================================================
+# PHASE 6 — PRÉVISION OUT-OF-SAMPLE
+# ==============================================================================
+#
+# MÉTHODOLOGIE — RÉGRESSION DIRECTE H-PAS (Diebold & Li 2006, footnote 11)
+#
+#   Diebold & Li précisent explicitement (note de bas de page 11, p. 351) :
+#   "we directly regress factors at t+h on factors at t, which is a standard
+#    method of coaxing least squares into optimizing the relevant loss function,
+#    h-month-ahead RMSE"
+#
+#   Concrètement pour un horizon h, on estime sur le TRAIN :
+#       β(t+h) = c_h + γ_h * β(t) + ε(t)
+#   puis on prédit sur le TEST : β̂(t+h|t) = ĉ_h + γ̂_h * β(t)
+#
+#   POURQUOI PAS LA FORMULE ANALYTIQUE φ^h ?
+#   Avec φ ≈ 0.999, la moyenne inconditionnelle μ = c/(1-φ) ≈ c/0.001 est
+#   numériquement explosive (ex: -1300%). La régression directe évite ce
+#   problème en estimant c_h et γ_h directement depuis les données à l'horizon
+#   voulu — c'est numériquement stable et c'est exactement ce que font les auteurs.
+#
+#   BENCHMARK : Random Walk → β̂(t+h|t) = β(t)
+#
+#   SPLIT : 80% train (chronologique), 20% test — pas de mélange aléatoire.
+# ==============================================================================
+
+# ── 6.1 SPLIT TEMPOREL 80/20 ──────────────────────────────────────────────────
+
+all_dates <- sort(unique(df_factors$Date))
+n_dates   <- length(all_dates)
+n_train   <- floor(0.80 * n_dates)
+
+train_dates <- all_dates[1:n_train]
+test_dates  <- all_dates[(n_train + 1):n_dates]
+
+cutoff_date <- max(train_dates)
+
+message("\n── Split 80/20 ──")
+message("Train : ", min(train_dates), " → ", cutoff_date,
+        " (", n_train, " dates)")
+message("Test  : ", min(test_dates), " → ", max(test_dates),
+        " (", length(test_dates), " dates)")
+
+df_factors_long <- df_factors |>
+  pivot_longer(cols = starts_with("Beta"), names_to = "Factor", values_to = "Value")
+
+df_train_long <- df_factors_long |> filter(Date <= cutoff_date)
+df_test_long  <- df_factors_long |> filter(Date >  cutoff_date)
+
+# ── 6.2 ESTIMATION PAR RÉGRESSION DIRECTE H-PAS SUR LE TRAIN ─────────────────
+#
+# Pour chaque (Country, Factor, horizon h) on construit le dataset :
+#   y = β(t+h),  x = β(t)
+# et on estime β(t+h) = c_h + γ_h * β(t) par OLS.
+# Les coefficients c_h et γ_h varient selon h — c'est une régression séparée
+# pour chaque horizon, pas une itération de la même AR(1).
+
+# ── HORIZONS CALÉS SUR L'ARTICLE DIEBOLD & LI ────────────────────────────────
+#
+# L'article teste h = 1, 6, 12 mois sur données MENSUELLES.
+# Nos données sont JOURNALIÈRES (jours ouvrés ≈ 21 j/mois) :
+#
+#   h_article =  1 mois  →  h_jours =  21  (≈ 1 mois)
+#   h_article =  6 mois  →  h_jours = 126  (≈ 6 mois)
+#   h_article = 12 mois  →  h_jours = 252  (≈ 1 an)
+#
+# CONTRAINTE : avec n_test jours de test, un horizon h laisse (n_test - h)
+# observations évaluables. On vérifie que ce chiffre reste ≥ 50.
+# ─────────────────────────────────────────────────────────────────────────────
+
+forecast_horizons_candidate <- c(21, 126, 252)
+horizon_labels <- c("h=21j (~1M)", "h=126j (~6M)", "h=252j (~12M)")
+
+n_test <- length(test_dates)
+min_obs_threshold <- 50
+
+usable_obs <- data.frame(
+  Horizon       = forecast_horizons_candidate,
+  Label         = horizon_labels,
+  Usable_obs    = n_test - forecast_horizons_candidate,
+  Sufficient    = (n_test - forecast_horizons_candidate) >= min_obs_threshold
+)
+
+message("\n── Vérification des horizons (données journalières vs article mensuel) ──")
+print(usable_obs)
+
+if (any(!usable_obs$Sufficient)) {
+  horizons_pb <- usable_obs$Horizon[!usable_obs$Sufficient]
+  warning("Horizons avec < ", min_obs_threshold, " obs évaluables : ",
+          paste(horizons_pb, collapse = ", "),
+          ". Retirés de l'analyse.")
+}
+
+# On ne garde que les horizons avec suffisamment d'observations
+forecast_horizons <- usable_obs$Horizon[usable_obs$Sufficient]
+forecast_labels   <- setNames(usable_obs$Label[usable_obs$Sufficient], forecast_horizons)
+message("Horizons retenus : ", paste(forecast_horizons, collapse = ", "))
+
+fit_direct_h <- function(series, h) {
+  # série = vecteur ordonné chronologiquement
+  n   <- length(series)
+  if (n <= h) return(list(c_h = NA, gamma_h = NA))
+  y   <- series[(h + 1):n]          # β(t+h)
+  x   <- series[1:(n - h)]          # β(t)
+  mod <- lm(y ~ x)
+  list(
+    c_h     = as.numeric(coef(mod)[1]),   # intercept
+    gamma_h = as.numeric(coef(mod)[2])    # pente
+  )
+}
+
+# Estimation de c_h et γ_h pour chaque Country x Factor x Horizon sur le TRAIN
+direct_params <- df_train_long |>
+  group_by(Country, Factor) |>
+  arrange(Date) |>
+  summarise(series = list(Value), .groups = "drop") |>
+  crossing(Horizon = forecast_horizons) |>
+  rowwise() |>
+  mutate(
+    fit     = list(fit_direct_h(series, Horizon)),
+    c_h     = fit$c_h,
+    gamma_h = fit$gamma_h
+  ) |>
+  ungroup() |>
+  select(Country, Factor, Horizon, c_h, gamma_h)
+
+message("\n── Paramètres régression directe h-pas (sur le TRAIN) ──")
+print(direct_params |> arrange(Country, Factor, Horizon))
+
+# ── 6.3 PRÉVISION SUR LE TEST ─────────────────────────────────────────────────
+#
+# Pour chaque date de test t et horizon h :
+#   - Le prédicteur est β(t), c'est-à-dire la valeur h jours AVANT t.
+#   - Si cette date précédente est dans le train → on utilise la valeur du train.
+#   - Si elle est dans le test → on utilise la valeur réelle du test (prévision
+#     directe, pas récursive — conforme à Diebold & Li).
+#
+# IMPORTANT : On utilise les valeurs RÉELLES de β(t) comme prédicteur (pas les
+# valeurs prévues récursivement). C'est la prévision "directe" de D&L, qui
+# optimise l'horizon h sans accumulation d'erreurs.
+
+# Pool train + test pour récupérer facilement les valeurs laggées
+df_all_long <- df_factors_long |> arrange(Country, Factor, Date)
+
+forecast_results <- list()
+
+for (h in forecast_horizons) {
+  
+  df_pred <- df_test_long |>
+    left_join(direct_params |> filter(Horizon == h),
+              by = c("Country", "Factor")) |>
+    left_join(
+      # Valeur de β(t) = lag de h périodes dans la série complète (train + test)
+      df_all_long |>
+        group_by(Country, Factor) |>
+        arrange(Date) |>
+        mutate(Beta_t = lag(Value, n = h)) |>
+        ungroup() |>
+        select(Country, Factor, Date, Beta_t),
+      by = c("Country", "Factor", "Date")
+    ) |>
+    mutate(
+      # Diebold-Li (régression directe h-pas) : β̂(t+h|t) = c_h + γ_h * β(t)
+      Beta_Pred_DL = c_h + gamma_h * Beta_t,
+      
+      # Random Walk : β̂(t+h|t) = β(t)
+      Beta_Pred_RW = Beta_t,
+      
+      Horizon = h
+    )
+  
+  forecast_results[[as.character(h)]] <- df_pred
+}
+
+df_all_forecasts_long <- bind_rows(forecast_results)
+
+# Passage en format large pour reconstruction des courbes
+df_preds_DL <- df_all_forecasts_long |>
+  select(Date, Country, Factor, Horizon, Beta_Pred_DL) |>
+  pivot_wider(names_from = Factor, values_from = Beta_Pred_DL, names_prefix = "DL_")
+
+df_preds_RW <- df_all_forecasts_long |>
+  select(Date, Country, Factor, Horizon, Beta_Pred_RW) |>
+  pivot_wider(names_from = Factor, values_from = Beta_Pred_RW, names_prefix = "RW_")
+
+df_preds_wide <- left_join(df_preds_DL, df_preds_RW, by = c("Date", "Country", "Horizon"))
+
+# Reconstruction des courbes de taux (yields interpolés réels vs prévus)
+df_final_forecast <- df_interpolated |>
+  filter(Date > cutoff_date) |>
+  left_join(lambda_by_country, by = "Country") |>
+  crossing(Horizon = forecast_horizons) |>
+  left_join(df_preds_wide, by = c("Date", "Country", "Horizon")) |>
+  mutate(
+    Yield_Pred_DL = ns_yield_calc(Lambda,
+                                  DL_Beta1_Level,
+                                  DL_Beta2_Slope,
+                                  DL_Beta3_Curvature,
+                                  Maturity),
+    Yield_Pred_RW = ns_yield_calc(Lambda,
+                                  RW_Beta1_Level,
+                                  RW_Beta2_Slope,
+                                  RW_Beta3_Curvature,
+                                  Maturity),
+    Error_DL = Yield - Yield_Pred_DL,
+    Error_RW = Yield - Yield_Pred_RW
+  ) |>
+  select(-Lambda)
+
+# ── 6.4 MÉTRIQUES DE PERFORMANCE ─────────────────────────────────────────────
+
+forecast_perf <- df_final_forecast |>
+  group_by(Country, Horizon) |>
+  summarise(
+    RMSE_DieboldLi  = round(sqrt(mean(Error_DL^2, na.rm = TRUE)), 4),
+    RMSE_RandomWalk = round(sqrt(mean(Error_RW^2, na.rm = TRUE)), 4),
+    Bias_DL         = round(mean(Error_DL,        na.rm = TRUE), 4),
+    Bias_RW         = round(mean(Error_RW,        na.rm = TRUE), 4),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Ratio_DL_vs_RW = round(RMSE_DieboldLi / RMSE_RandomWalk, 3),
+    DL_Wins        = Ratio_DL_vs_RW < 1
+  ) |>
+  arrange(Country, Horizon)
+
+message("\n========================================================")
+message("PERFORMANCES OUT-OF-SAMPLE (SPLIT 80/20)")
+message("Ratio < 1 = Diebold-Li bat le Random Walk")
+message("========================================================")
+print(forecast_perf, n = Inf)
+
+# Résumé agrégé (moyenne sur tous les pays, par horizon)
+forecast_perf_avg <- forecast_perf |>
+  group_by(Horizon) |>
+  summarise(
+    Avg_RMSE_DL  = round(mean(RMSE_DieboldLi),  4),
+    Avg_RMSE_RW  = round(mean(RMSE_RandomWalk),  4),
+    Avg_Ratio    = round(mean(Ratio_DL_vs_RW),   3),
+    N_DL_Wins    = sum(DL_Wins),
+    N_Countries  = n(),
+    .groups = "drop"
+  )
+
+message("\n── Résumé agrégé (moyenne sur les 5 pays) ──")
+print(forecast_perf_avg)
+
+# ── 6.5 VISUALISATION 1 : RMSE DL vs RW par pays et horizon ──────────────────
+
+p_rmse_compare <- forecast_perf |>
+  select(Country, Horizon, RMSE_DieboldLi, RMSE_RandomWalk) |>
+  pivot_longer(cols = c(RMSE_DieboldLi, RMSE_RandomWalk),
+               names_to = "Model", values_to = "RMSE") |>
+  mutate(
+    Horizon_label = recode(as.character(Horizon),
+                           "21"  = "h=21j (~1 mois)",
+                           "126" = "h=126j (~6 mois)",
+                           "252" = "h=252j (~12 mois)"),
+    Model = recode(Model,
+                   "RMSE_DieboldLi"  = "Diebold-Li",
+                   "RMSE_RandomWalk" = "Random Walk")
+  ) |>
+  ggplot(aes(x = Country, y = RMSE, fill = Model)) +
+  geom_col(position = "dodge", alpha = 0.85) +
+  facet_wrap(~Horizon_label, ncol = 1, scales = "free_y") +
+  scale_fill_manual(values = c("Diebold-Li" = "#BA0C2F",
+                               "Random Walk"          = "grey60")) +
+  labs(
+    title    = "RMSE Out-of-Sample : Diebold-Li vs Random Walk",
+    subtitle = paste0("Test : ", format(min(test_dates), "%d/%m/%Y"),
+                      " → ", format(max(test_dates), "%d/%m/%Y"),
+                      " (20% des données)"),
+    x = "Pays", y = "RMSE (%)", fill = "Modèle"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x  = element_text(angle = 30, hjust = 1),
+    legend.position = "bottom",
+    plot.title   = element_text(face = "bold")
+  )
+print(p_rmse_compare)
+
+# ── 6.6 VISUALISATION 2 : SNAPSHOT courbe prévisée vs réelle (taux 10Y) ──────
+
+# La visualisation de la TS pour le taux 10 ans est le choix réalisé par DL dans leur article.
+# Il s'agit juste d'un choix arbitraire pour une visualisation plus claire.
+p_forecast_10y <- df_final_forecast |>
+  filter(Maturity == 10, Country == germany_name) |>
+  mutate(Horizon_label = recode(as.character(Horizon),
+                                "21"  = "h=21j (~1 mois)",
+                                "126" = "h=126j (~6 mois)",
+                                "252" = "h=252j (~12 mois)")) |>
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = Yield,         color = "Réel"),                linewidth = 0.9) +
+  geom_line(aes(y = Yield_Pred_DL, color = "Diebold-Li"), linewidth = 1.0) +
+  geom_line(aes(y = Yield_Pred_RW, color = "Random Walk"),         linewidth = 1.0) +
+  facet_wrap(~Horizon_label, ncol = 1, scales = "free_y") +
+  scale_color_manual(values = c(
+    "Réel"                = "black",
+    "Diebold-Li" = "#BA0C2F",
+    "Random Walk"         = "forestgreen"
+  )) +
+  labs(
+    title    = paste0("Prévision du Taux 10 ans — ", germany_name, " (Out-of-Sample)"),
+    subtitle = "Comparaison Diebold-Li vs Random Walk",
+    y = "Yield (%)", x = "Date", color = "Modèle"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+print(p_forecast_10y)
+
+# ── 6.7 VISUALISATION 3 : Ratio RMSE DL/RW (< 1 = DL gagne) ─────────────────
+
+p_ratio <- forecast_perf |>
+  mutate(Horizon_label = recode(as.character(Horizon),
+                                "21"  = "h=21j (~1 mois)",
+                                "126" = "h=126j (~6 mois)",
+                                "252" = "h=252j (~12 mois)")) |>
+  ggplot(aes(x = Country, y = Ratio_DL_vs_RW, fill = DL_Wins)) +
+  geom_col(alpha = 0.85) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black", linewidth = 0.8) +
+  facet_wrap(~Horizon_label, ncol = 1) +
+  scale_fill_manual(values = c("TRUE" = "#009E73", "FALSE" = "#D55E00"),
+                    labels = c("TRUE" = "DL est meilleur", "FALSE" = "RW est meilleur")) +
+  labs(
+    title    = "Ratio RMSE Diebold-Li / Random Walk",
+    x = "Pays", y = "RMSE(DL) / RMSE(RW)", fill = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x  = element_text(angle = 30, hjust = 1),
+    legend.position = "bottom",
+    plot.title   = element_text(face = "bold")
+  )
+print(p_ratio)
