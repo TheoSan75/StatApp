@@ -1,0 +1,101 @@
+Dataset corporate long : 7318 obs | 12 dates | 627 obligations
+
+── Segmentation par rating bucket (dernière date) ──
+> print(rating_summary)
+# A tibble: 12 × 3
+   Rating_Bucket Rating N_bonds
+   <chr>         <chr>    <int>
+ 1 A             A          124
+ 2 A             A+          81
+ 3 A             A-         108
+ 4 AA            AA           1
+ 5 AA            AA+         27
+ 6 AA            AA-         43
+ 7 BBB           BBB         58
+ 8 BBB           BBB+       143
+ 9 BBB           BBB-        22
+10 HY            BB           5
+11 HY            BB+         14
+12 HY            CCC+         1
+
+
+Courbe swap : 26 points, maturités de 0.5 à 50 ans
+
+─ Paramètres Svensson — Courbe Swap (Risk-Free) ──
+
+b0=2.834 b1=-0.744 b2=7.085 b3=-5.877 tau1=6.462 tau2=5.155
+RMSE swap : 0.0063%
+
+── Spreads observés par bucket (dernière date) ──
+> print(spread_check)
+# A tibble: 4 × 5
+  Rating_Bucket     N Spread_Mean Spread_Min Spread_Max
+  <chr>         <int>       <dbl>      <dbl>      <dbl>
+1 A               313       0.819      0.073      15.6 
+2 AA               71       0.688      0.176       1.53
+3 BBB             223       0.954     -0.833       2.72
+4 HY               20       2.16       1.37        9.54
+
+
+── Paramètres moyens par Rating Bucket (Tableau de Ren) ──
+# A tibble: 4 × 8
+  Rating_Bucket    b0    b1    b2     b3  tau1  tau2 RMSYE
+  <chr>         <dbl> <dbl> <dbl>  <dbl> <dbl> <dbl> <dbl>
+1 A              4.85 -4.78  2.05 -10.7   4.34  9.24 0.114
+2 AA             1.12 -1.03  6.89  -7.79  2.57  2.52 0.132
+3 BBB            1.80 -1.56  6.67  -7.89  2.63  2.79 0.198
+4 HY             5.85 -1.92 -4.89 -13.2   2.43  9.62 0.387
+
+
+── Performance in-sample (RMSYE en %) — Ren Table I equivalent ──
+> print(perf_summary)
+# A tibble: 4 × 5
+  Rating_Bucket N_obs RMSYE_Yield RMSYE_Spread Bias_Yield
+  <chr>         <int>       <dbl>        <dbl>      <dbl>
+1 AA              810       0.187        0.187     0.024 
+2 A              3569       0.136        0.136     0.0098
+3 BBB            2550       0.253        0.253     0.0513
+4 HY              202       0.352        0.352    -0.0045
+
+
+── Performance in-sample (Agrégée par Rating Bucket) ──
+> print(perf_summary)
+# A tibble: 4 × 10
+  Rating_Bucket N_Models W_RMSE Price_RMSE Wiggliness Tail_Stab_30_50 `Bias_0-2Y` `Bias_2-5Y` `Bias_5-10Y` `Bias_10-30Y`
+  <chr>            <int>  <dbl>      <dbl>      <dbl>           <dbl>       <dbl>       <dbl>        <dbl>         <dbl>
+1 AA                  12  0.132      1.49       0.523          0.0218     -0.0135     -0.0082       0.0933        0.0247
+2 A                   12  0.114      0.674      0.194          0.742      -0.0129      0.0236       0.036        -0.0213
+3 BBB                 12  0.198      2.16       0.163          0.0317      0.0018      0.0677       0.0618        0.143 
+4 HY                  12  0.387      0.938    469.             1.01        0.197      -0.0871      -0.024         0.006 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
