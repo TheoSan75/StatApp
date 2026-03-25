@@ -784,8 +784,8 @@ p_viz1 <- ggplot() +
                         name=NULL) +
   scale_x_continuous(breaks=seq(0,30,5)) +
   labs(
-    title    = "Viz 1 — Courbes de spread NS3 : Estimée vs A priori (par classe de sparsité)",
-    subtitle = paste0("Points noirs = obligations observées | Date : ",
+    title    = "Courbes de spread NS3 par classe de sparsité",
+    subtitle = paste0("Date : ",
                       format(last_date, "%d/%m/%Y")),
     x = "Maturité (Années)", y = "Spread vs Swap (%)"
   ) +
@@ -830,13 +830,12 @@ p_viz3 <- metrics_global |>
                                           "Modéré (6–9)","Riche (≥ 10)"))) |>
   ggplot(aes(x=Sparsity_Class, y=RMSE_Yield, fill=Sample)) +
   geom_col(position="dodge", alpha=0.85) +
-  geom_text(aes(label=round(RMSE_Yield*100,2)), position=position_dodge(width=0.9),
+  geom_text(aes(label=round(RMSE_Yield,2)), position=position_dodge(width=0.9),
             vjust=-0.4, size=3, fontface="bold") +
   scale_fill_manual(values=c("In-Sample"="#2E86C1","Out-of-Sample"="#E74C3C"), name=NULL) +
   labs(
-    title    = "Viz 3 — RMSE yield (%) : In-Sample vs Out-of-Sample par classe de sparsité",
-    subtitle = "Le shrinkage réduit l'écart IS/OOS pour les émetteurs sparse",
-    x=NULL, y="RMSE Yield (%)"
+    title    = "RMSE yield : In-Sample vs Out-of-Sample",
+    x=NULL, y="RMSE Yield"
   ) +
   theme_minimal() +
   theme(plot.title=element_text(face="bold"),
